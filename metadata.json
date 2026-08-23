@@ -1,0 +1,6 @@
+{
+  "name": "PDF Viewer",
+  "description": "PDF閲覧、検索、テキスト選択・共有、メモ機能付きのシンプルなPDFビューアアプリ",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

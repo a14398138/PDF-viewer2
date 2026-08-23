@@ -1,0 +1,22 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Arrow pointing up -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M12,14.5 V2.8 M7.5,7.2 L12,2.8 L16.5,7.2" />
+    <!-- Rounded Box tray with open top -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M8,8.5 H6 C4.895,8.5 4,9.395 4,10.5 V19 C4,20.105 4.895,21 6,21 H18 C19.105,21 20,20.105 20,19 V10.5 C20,9.395 19.105,8.5 18,8.5 H16" />
+</vector>
