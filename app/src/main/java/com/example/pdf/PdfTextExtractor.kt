@@ -482,22 +482,54 @@ object PdfTextExtractor {
             val cur = sorted[i]
             if (i > 0) {
                 val prev = sorted[i - 1]
-                if (cur.lineIndex != prev.lineIndex) {
-                    sb.append("\n")
-                } else {
-                    val prevLastChar = prev.text.lastOrNull()
-                    val curFirstChar = cur.text.firstOrNull()
-                    val isPrevCjk = prevLastChar != null && isCjkChar(prevLastChar)
-                    val isCurCjk = curFirstChar != null && isCjkChar(curFirstChar)
-                    // Insert space only between non-CJK (English / alphanumeric) words
-                    if (!isPrevCjk && !isCurCjk) {
-                        sb.append(" ")
-                    }
+                val prevLastChar = prev.text.lastOrNull()
+                val curFirstChar = cur.text.firstOrNull()
+                val isPrevCjk = prevLastChar != null && isCjkChar(prevLastChar)
+                val isCurCjk = curFirstChar != null && isCjkChar(curFirstChar)
+
+                // 行またぎであっても改行を挿入せず、自然な文章として連結
+                if (prev.text.endsWith("-") && !isPrevCjk && !isCurCjk) {
+                    // 単語末尾のハイフンによる行またぎ（例: "inter-" + "national" -> "international"）を結合
+                    sb.setLength(sb.length - 1)
+                } else if (!isPrevCjk && !isCurCjk) {
+                    // 英数字・欧文単語間のスペース
+                    sb.append(" ")
                 }
             }
             sb.append(cur.text)
         }
         return sb.toString()
+    }
+
+    /**
+     * Cleans up unwanted line-breaks in multi-line extracted text (for CJK & continuous sentences).
+     */
+    fun cleanPdfExtractedText(raw: String): String {
+        if (raw.isBlank()) return ""
+        // Replace single line breaks while preserving double newlines (paragraphs)
+        val paragraphs = raw.split("\n\n")
+        return paragraphs.joinToString("\n\n") { p ->
+            val lines = p.lines().map { it.trim() }.filter { it.isNotEmpty() }
+            val sb = StringBuilder()
+            for (i in lines.indices) {
+                val line = lines[i]
+                if (i > 0) {
+                    val prev = lines[i - 1]
+                    val prevLast = prev.lastOrNull()
+                    val curFirst = line.firstOrNull()
+                    val isPrevCjk = prevLast != null && isCjkChar(prevLast)
+                    val isCurCjk = curFirst != null && isCjkChar(curFirst)
+
+                    if (prev.endsWith("-") && !isPrevCjk && !isCurCjk) {
+                        sb.setLength(sb.length - 1)
+                    } else if (!isPrevCjk && !isCurCjk) {
+                        sb.append(" ")
+                    }
+                }
+                sb.append(line)
+            }
+            sb.toString()
+        }
     }
 
     /**

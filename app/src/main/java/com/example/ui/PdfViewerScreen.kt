@@ -46,10 +46,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.BrightnessAuto
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.EditNote
+import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Public
@@ -57,6 +61,10 @@ import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.ScreenRotation
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.ui.graphics.ColorFilter
+import com.example.ui.theme.PdfDarkColorMatrix
+import com.example.ui.theme.ThemeMode
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -138,6 +146,8 @@ fun PdfViewerScreen(
     currentMatchIndex: Int,
     isNoteDialogOpen: Boolean,
     isRenameDialogOpen: Boolean,
+    themeMode: ThemeMode = ThemeMode.SYSTEM,
+    onThemeModeChanged: (ThemeMode) -> Unit = {},
     onBack: () -> Unit,
     onToggleControls: () -> Unit,
     onSetControlsVisible: (Boolean) -> Unit,
@@ -161,6 +171,13 @@ fun PdfViewerScreen(
     val clipboardManager = LocalClipboardManager.current
     val coroutineScope = rememberCoroutineScope()
     val listState = rememberLazyListState(initialFirstVisibleItemIndex = currentPage)
+
+    val isSystemDark = isSystemInDarkTheme()
+    val isDark = when (themeMode) {
+        ThemeMode.SYSTEM -> isSystemDark
+        ThemeMode.LIGHT -> false
+        ThemeMode.DARK -> true
+    }
 
     var menuExpanded by remember { mutableStateOf(false) }
 
@@ -208,7 +225,7 @@ fun PdfViewerScreen(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.surfaceContainerLowest)
+            .background(if (isDark) Color(0xFF141518) else MaterialTheme.colorScheme.surfaceContainerLowest)
             .testTag("pdf_viewer_screen")
     ) {
         // PDF Pages Container with pinch-to-zoom and pan transformations
@@ -256,6 +273,7 @@ fun PdfViewerScreen(
                         pageIndex = pageIndex,
                         pdfEngine = pdfEngine,
                         pageText = pageText,
+                        isDarkMode = isDark,
                         selectedWordIndices = if (activeSelectedPage == pageIndex) activeSelectedWordIndices else emptySet(),
                         onWordsSelected = { wordIndices, text ->
                             activeSelectedPage = pageIndex
@@ -385,6 +403,50 @@ fun PdfViewerScreen(
                                         },
                                         modifier = Modifier.testTag("menu_item_rename")
                                     )
+
+                                    androidx.compose.material3.HorizontalDivider(
+                                        modifier = Modifier.padding(vertical = 4.dp),
+                                        color = MaterialTheme.colorScheme.outlineVariant
+                                    )
+
+                                    // 3. テーマモード切り替え (システム / ライト / ダーク)
+                                    ThemeMode.values().forEach { mode ->
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    text = mode.title,
+                                                    fontWeight = if (mode == themeMode) FontWeight.Bold else FontWeight.Normal,
+                                                    color = if (mode == themeMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                                )
+                                            },
+                                            leadingIcon = {
+                                                val icon = when (mode) {
+                                                    ThemeMode.SYSTEM -> Icons.Default.BrightnessAuto
+                                                    ThemeMode.LIGHT -> Icons.Default.LightMode
+                                                    ThemeMode.DARK -> Icons.Default.DarkMode
+                                                }
+                                                Icon(
+                                                    imageVector = icon,
+                                                    contentDescription = null,
+                                                    tint = if (mode == themeMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            },
+                                            trailingIcon = if (mode == themeMode) {
+                                                {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Check,
+                                                        contentDescription = "選択中",
+                                                        tint = MaterialTheme.colorScheme.primary
+                                                    )
+                                                }
+                                            } else null,
+                                            onClick = {
+                                                menuExpanded = false
+                                                onThemeModeChanged(mode)
+                                            },
+                                            modifier = Modifier.testTag("viewer_theme_menu_${mode.name.lowercase()}")
+                                        )
+                                    }
                                 }
                             }
                         },
@@ -829,6 +891,7 @@ fun PdfPageItem(
     pageIndex: Int,
     pdfEngine: PdfEngine?,
     pageText: PageText?,
+    isDarkMode: Boolean = false,
     selectedWordIndices: Set<Int>,
     onWordsSelected: (Set<Int>, String) -> Unit,
     onPageTextRecognized: (PageText) -> Unit,
@@ -883,7 +946,7 @@ fun PdfPageItem(
             .fillMaxWidth()
             .aspectRatio(aspectRatio)
             .testTag("pdf_page_$pageIndex"),
-        color = Color.White
+        color = if (isDarkMode) Color(0xFF222428) else Color.White
     ) {
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
             val pageWPx = constraints.maxWidth.toFloat()
@@ -895,6 +958,7 @@ fun PdfPageItem(
                     bitmap = currentBitmap.asImageBitmap(),
                     contentDescription = "Page ${pageIndex + 1}",
                     contentScale = ContentScale.FillBounds,
+                    colorFilter = if (isDarkMode) ColorFilter.colorMatrix(PdfDarkColorMatrix) else null,
                     modifier = Modifier.fillMaxSize()
                 )
             } else {

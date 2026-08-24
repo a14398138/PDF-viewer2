@@ -29,12 +29,16 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.BrightnessAuto
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ClearAll
+import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Search
@@ -75,6 +79,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.PdfItem
+import com.example.ui.theme.ThemeMode
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -84,6 +89,8 @@ import java.util.Locale
 @Composable
 fun HomeScreen(
     historyList: List<PdfItem>,
+    themeMode: ThemeMode = ThemeMode.SYSTEM,
+    onThemeModeChanged: (ThemeMode) -> Unit = {},
     onOpenPdfUri: (Uri) -> Unit,
     onOpenHistoryItem: (PdfItem) -> Unit = {},
     onOpenSamplePdf: () -> Unit,
@@ -95,6 +102,7 @@ fun HomeScreen(
     var searchQuery by remember { mutableStateOf("") }
     var isSearchExpanded by remember { mutableStateOf(false) }
     var showClearConfirmDialog by remember { mutableStateOf(false) }
+    var themeMenuExpanded by remember { mutableStateOf(false) }
 
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -187,6 +195,69 @@ fun HomeScreen(
                             imageVector = Icons.Default.Search,
                             contentDescription = "Search History"
                         )
+                    }
+
+                    // テーマ切り替え (System / Light / Dark)
+                    Box {
+                        IconButton(
+                            onClick = { themeMenuExpanded = true },
+                            modifier = Modifier.testTag("home_theme_toggle_button")
+                        ) {
+                            val themeIcon = when (themeMode) {
+                                ThemeMode.SYSTEM -> Icons.Default.BrightnessAuto
+                                ThemeMode.LIGHT -> Icons.Default.LightMode
+                                ThemeMode.DARK -> Icons.Default.DarkMode
+                            }
+                            Icon(
+                                imageVector = themeIcon,
+                                contentDescription = "テーマ切り替え (${themeMode.title})"
+                            )
+                        }
+
+                        DropdownMenu(
+                            expanded = themeMenuExpanded,
+                            onDismissRequest = { themeMenuExpanded = false },
+                            shape = RoundedCornerShape(16.dp),
+                            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+                        ) {
+                            ThemeMode.values().forEach { mode ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            text = mode.title,
+                                            fontWeight = if (mode == themeMode) FontWeight.Bold else FontWeight.Normal,
+                                            color = if (mode == themeMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                        )
+                                    },
+                                    leadingIcon = {
+                                        val icon = when (mode) {
+                                            ThemeMode.SYSTEM -> Icons.Default.BrightnessAuto
+                                            ThemeMode.LIGHT -> Icons.Default.LightMode
+                                            ThemeMode.DARK -> Icons.Default.DarkMode
+                                        }
+                                        Icon(
+                                            imageVector = icon,
+                                            contentDescription = null,
+                                            tint = if (mode == themeMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    },
+                                    trailingIcon = if (mode == themeMode) {
+                                        {
+                                            Icon(
+                                                imageVector = Icons.Default.Check,
+                                                contentDescription = "選択中",
+                                                tint = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                    } else null,
+                                    onClick = {
+                                        themeMenuExpanded = false
+                                        onThemeModeChanged(mode)
+                                    },
+                                    modifier = Modifier.testTag("theme_menu_${mode.name.lowercase()}")
+                                )
+                            }
+                        }
                     }
 
                     if (historyList.isNotEmpty()) {

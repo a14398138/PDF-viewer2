@@ -1,6 +1,7 @@
 package com.example.ui
 
 import android.app.Application
+import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -11,6 +12,7 @@ import com.example.pdf.PageText
 import com.example.pdf.PdfEngine
 import com.example.pdf.PdfTextExtractor
 import com.example.pdf.SearchMatch
+import com.example.ui.theme.ThemeMode
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -24,6 +26,25 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
 
     private val repository: PdfRepository
     private var currentEngine: PdfEngine? = null
+
+    private val prefs = application.getSharedPreferences("app_settings", Context.MODE_PRIVATE)
+
+    private val _themeMode = MutableStateFlow(loadSavedThemeMode())
+    val themeMode: StateFlow<ThemeMode> = _themeMode.asStateFlow()
+
+    fun setThemeMode(mode: ThemeMode) {
+        _themeMode.value = mode
+        prefs.edit().putString("theme_mode", mode.name).apply()
+    }
+
+    private fun loadSavedThemeMode(): ThemeMode {
+        val name = prefs.getString("theme_mode", ThemeMode.SYSTEM.name)
+        return try {
+            ThemeMode.valueOf(name ?: ThemeMode.SYSTEM.name)
+        } catch (_: Exception) {
+            ThemeMode.SYSTEM
+        }
+    }
 
     val historyList: StateFlow<List<PdfItem>>
 

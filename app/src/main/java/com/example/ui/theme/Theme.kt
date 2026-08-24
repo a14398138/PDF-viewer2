@@ -10,6 +10,21 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
 
+enum class ThemeMode(val title: String) {
+    SYSTEM("システム設定に従う"),
+    LIGHT("ライトモード"),
+    DARK("ダークモード")
+}
+
+val PdfDarkColorMatrix = androidx.compose.ui.graphics.ColorMatrix(
+    floatArrayOf(
+        -0.78f, 0f, 0f, 0f, 230f,
+        0f, -0.78f, 0f, 0f, 230f,
+        0f, 0f, -0.78f, 0f, 230f,
+        0f, 0f, 0f, 1f, 0f
+    )
+)
+
 private val DarkColorScheme = darkColorScheme(
     primary = PolishPrimaryDark,
     onPrimary = PolishOnPrimaryDark,

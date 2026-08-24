@@ -18,6 +18,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -32,6 +33,7 @@ import com.example.ui.HomeScreen
 import com.example.ui.PdfViewerScreen
 import com.example.ui.PdfViewerViewModel
 import com.example.ui.theme.MyApplicationTheme
+import com.example.ui.theme.ThemeMode
 
 class MainActivity : ComponentActivity() {
 
@@ -48,12 +50,23 @@ class MainActivity : ComponentActivity() {
         handleIntent(intent)
 
         setContent {
-            MyApplicationTheme {
+            val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
+            val isDark = when (themeMode) {
+                ThemeMode.SYSTEM -> isSystemInDarkTheme()
+                ThemeMode.LIGHT -> false
+                ThemeMode.DARK -> true
+            }
+
+            MyApplicationTheme(darkTheme = isDark) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    PdfApp(viewModel = viewModel)
+                    PdfApp(
+                        viewModel = viewModel,
+                        themeMode = themeMode,
+                        onThemeModeChanged = { viewModel.setThemeMode(it) }
+                    )
                 }
             }
         }
@@ -105,7 +118,11 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun PdfApp(viewModel: PdfViewerViewModel) {
+fun PdfApp(
+    viewModel: PdfViewerViewModel,
+    themeMode: ThemeMode = ThemeMode.SYSTEM,
+    onThemeModeChanged: (ThemeMode) -> Unit = {}
+) {
     val historyList by viewModel.historyList.collectAsStateWithLifecycle()
     val activePdfItem by viewModel.activePdfItem.collectAsStateWithLifecycle()
     val isPendingIntentOpen by viewModel.isPendingIntentOpen.collectAsStateWithLifecycle()
@@ -167,6 +184,8 @@ fun PdfApp(viewModel: PdfViewerViewModel) {
                             currentMatchIndex = currentMatchIndex,
                             isNoteDialogOpen = isNoteDialogOpen,
                             isRenameDialogOpen = isRenameDialogOpen,
+                            themeMode = themeMode,
+                            onThemeModeChanged = onThemeModeChanged,
                             onBack = { viewModel.closePdf() },
                             onToggleControls = { viewModel.toggleControls() },
                             onSetControlsVisible = { viewModel.setControlsVisible(it) },
@@ -202,6 +221,8 @@ fun PdfApp(viewModel: PdfViewerViewModel) {
                 else -> {
                     HomeScreen(
                         historyList = historyList,
+                        themeMode = themeMode,
+                        onThemeModeChanged = onThemeModeChanged,
                         onOpenPdfUri = { uri -> viewModel.openPdf(uri) },
                         onOpenHistoryItem = { item -> viewModel.openPdfItem(item) },
                         onOpenSamplePdf = { viewModel.openSamplePdf() },
