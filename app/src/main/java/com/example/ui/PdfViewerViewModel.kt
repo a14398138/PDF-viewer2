@@ -131,19 +131,32 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 currentEngine = null
 
                 val (item, extractedPages) = repository.openAndRecordPdf(uri)
-                _activePdfItem.value = item
-                _activePagesText.value = extractedPages
-                _currentPage.value = item.lastOpenedPage.coerceIn(0, (item.pageCount - 1).coerceAtLeast(0))
-                _isControlsVisible.value = true
-                closeSearch()
-                _selectedText.value = null
+                val targetPage = item.lastOpenedPage.coerceIn(0, (item.pageCount - 1).coerceAtLeast(0))
 
                 // Open engine instance for rendering
                 val file = item.filePath?.let { File(it) }
                 if (file != null && file.exists()) {
                     val engine = PdfEngine(getApplication(), file)
                     currentEngine = engine
-                    startBackgroundTextExtraction(engine, file, item.pageCount, _currentPage.value)
+
+                    // Pre-render active page immediately so it is instantly available in memory cache
+                    engine.renderPageBitmap(targetPage)
+
+                    _activePdfItem.value = item
+                    _activePagesText.value = extractedPages
+                    _currentPage.value = targetPage
+                    _isControlsVisible.value = true
+                    closeSearch()
+                    _selectedText.value = null
+
+                    startBackgroundTextExtraction(engine, file, item.pageCount, targetPage)
+                } else {
+                    _activePdfItem.value = item
+                    _activePagesText.value = extractedPages
+                    _currentPage.value = targetPage
+                    _isControlsVisible.value = true
+                    closeSearch()
+                    _selectedText.value = null
                 }
             } catch (e: Exception) {
                 _errorMessage.value = "PDFを開けませんでした: ${e.localizedMessage}"
@@ -164,18 +177,24 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 currentEngine = null
 
                 val (item, extractedPages) = repository.openFromHistory(historyItem)
-                _activePdfItem.value = item
-                _activePagesText.value = extractedPages
-                _currentPage.value = item.lastOpenedPage.coerceIn(0, (item.pageCount - 1).coerceAtLeast(0))
-                _isControlsVisible.value = true
-                closeSearch()
-                _selectedText.value = null
+                val targetPage = item.lastOpenedPage.coerceIn(0, (item.pageCount - 1).coerceAtLeast(0))
 
                 val file = item.filePath?.let { File(it) }
                 if (file != null && file.exists()) {
                     val engine = PdfEngine(getApplication(), file)
                     currentEngine = engine
-                    startBackgroundTextExtraction(engine, file, item.pageCount, _currentPage.value)
+
+                    // Pre-render active page immediately
+                    engine.renderPageBitmap(targetPage)
+
+                    _activePdfItem.value = item
+                    _activePagesText.value = extractedPages
+                    _currentPage.value = targetPage
+                    _isControlsVisible.value = true
+                    closeSearch()
+                    _selectedText.value = null
+
+                    startBackgroundTextExtraction(engine, file, item.pageCount, targetPage)
                 } else {
                     throw IllegalStateException("ファイルが見つかりません")
                 }
@@ -198,17 +217,21 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 currentEngine = null
 
                 val (item, extractedPages) = repository.openSamplePdf()
-                _activePdfItem.value = item
-                _activePagesText.value = extractedPages
-                _currentPage.value = 0
-                _isControlsVisible.value = true
-                closeSearch()
-                _selectedText.value = null
-
                 val file = item.filePath?.let { File(it) }
                 if (file != null && file.exists()) {
                     val engine = PdfEngine(getApplication(), file)
                     currentEngine = engine
+
+                    // Pre-render page 0 immediately
+                    engine.renderPageBitmap(0)
+
+                    _activePdfItem.value = item
+                    _activePagesText.value = extractedPages
+                    _currentPage.value = 0
+                    _isControlsVisible.value = true
+                    closeSearch()
+                    _selectedText.value = null
+
                     startBackgroundTextExtraction(engine, file, item.pageCount, 0)
                 }
             } catch (e: Exception) {
@@ -232,6 +255,9 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         if (pageCount <= 0) return
 
         backgroundTextJob = viewModelScope.launch(kotlinx.coroutines.Dispatchers.Default) {
+            // Give UI immediate rendering priority for the first frame
+            kotlinx.coroutines.delay(100)
+
             val session = if (file != null && file.exists()) {
                 PdfTextExtractor.openSession(file)
             } else {

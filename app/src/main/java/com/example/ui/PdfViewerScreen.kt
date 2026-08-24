@@ -911,33 +911,19 @@ fun PdfPageItem(
         pageDimensions.first.toFloat() / pageDimensions.second.toFloat().coerceAtLeast(1f)
     }
 
-    val pageBitmapState = produceState<Bitmap?>(initialValue = null, pdfEngine, pageIndex, screenWidthPx) {
-        if (pdfEngine != null) {
-            value = pdfEngine.renderPageBitmap(pageIndex, targetWidth = (screenWidthPx * 1.5).toInt())
+    val targetWidth = remember(screenWidthPx) { (screenWidthPx * 1.5).toInt() }
+    val initialCached = remember(pdfEngine, pageIndex, targetWidth) {
+        pdfEngine?.getCachedBitmap(pageIndex, targetWidth)
+    }
+
+    val pageBitmapState = produceState<Bitmap?>(initialValue = initialCached, pdfEngine, pageIndex, targetWidth) {
+        if (value == null && pdfEngine != null) {
+            value = pdfEngine.renderPageBitmap(pageIndex, targetWidth = targetWidth)
         }
     }
 
     val words = remember(pageText) { pageText?.words.orEmpty() }
-
-    // Prioritize embedded native text layer extraction, fall back to OCR if none exists
     val currentBitmap = pageBitmapState.value
-    LaunchedEffect(pdfEngine, pageIndex, words.isEmpty(), currentBitmap) {
-        if (words.isEmpty()) {
-            val file = pdfEngine?.file
-            val nativeText = if (file != null && file.exists()) {
-                PdfTextExtractor.extractNativeTextFromPdf(file, pageIndex)
-            } else null
-
-            if (nativeText != null && nativeText.words.isNotEmpty()) {
-                onPageTextRecognized(nativeText)
-            } else if (currentBitmap != null) {
-                val recognized = PdfTextExtractor.extractPageFromBitmap(currentBitmap, pageIndex)
-                if (recognized.words.isNotEmpty()) {
-                    onPageTextRecognized(recognized)
-                }
-            }
-        }
-    }
 
     var dragStartWordIndex by remember { mutableStateOf<Int?>(null) }
 

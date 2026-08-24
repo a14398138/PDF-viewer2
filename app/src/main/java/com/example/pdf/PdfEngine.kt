@@ -99,6 +99,12 @@ class PdfEngine(
         }
     }
 
+    fun getCachedBitmap(pageIndex: Int, targetWidth: Int = 1080): Bitmap? {
+        val cacheKey = "${localPdfFile.absolutePath}_p${pageIndex}_w$targetWidth"
+        val cached = bitmapCache.get(cacheKey)
+        return if (cached != null && !cached.isRecycled) cached else null
+    }
+
     suspend fun renderPageBitmap(
         pageIndex: Int,
         targetWidth: Int = 1080,
