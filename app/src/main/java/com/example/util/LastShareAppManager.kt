@@ -12,6 +12,10 @@ import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.os.Build
 import android.util.Log
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 
 data class LastSharedApp(
     val packageName: String,
@@ -45,53 +49,179 @@ object LastShareAppManager {
     private const val KEY_PACKAGE = "last_share_pkg"
     private const val KEY_CLASS = "last_share_cls"
     private const val KEY_NAME = "last_share_name"
+    private const val KEY_HISTORY_JSON = "share_history_json"
     private const val ACTION_SHARE_CHOSEN = "com.example.ACTION_SHARE_CHOSEN"
+    private const val MAX_HISTORY = 10
+
+    @Volatile
+    private var cachedRecentApps: List<LastSharedApp>? = null
 
     fun saveLastSharedApp(context: Context, componentName: ComponentName) {
         try {
+            cachedRecentApps = null
             val pm = context.packageManager
             val appInfo = pm.getApplicationInfo(componentName.packageName, 0)
             val label = pm.getApplicationLabel(appInfo).toString()
 
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            
+            // Save single primary last app
             prefs.edit()
                 .putString(KEY_PACKAGE, componentName.packageName)
                 .putString(KEY_CLASS, componentName.className)
                 .putString(KEY_NAME, label)
                 .apply()
+
+            // Update multi-app history
+            val existingHistory = getHistoryEntries(context).toMutableList()
+            // Remove duplicate if already exists
+            existingHistory.removeAll { it.optString("pkg") == componentName.packageName }
+            // Add to front
+            val newEntry = JSONObject().apply {
+                put("pkg", componentName.packageName)
+                put("cls", componentName.className ?: "")
+                put("name", label)
+            }
+            existingHistory.add(0, newEntry)
+
+            val jsonArray = JSONArray()
+            existingHistory.take(MAX_HISTORY).forEach { jsonArray.put(it) }
+
+            prefs.edit().putString(KEY_HISTORY_JSON, jsonArray.toString()).apply()
         } catch (e: Exception) {
             Log.w("LastShareAppManager", "Error saving last shared app: ${e.message}")
         }
     }
 
-    fun getLastSharedApp(context: Context): LastSharedApp? {
+    private fun getHistoryEntries(context: Context): List<JSONObject> {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val pkg = prefs.getString(KEY_PACKAGE, null) ?: return null
-        val cls = prefs.getString(KEY_CLASS, null)
-        val name = prefs.getString(KEY_NAME, null) ?: "アプリ"
+        val jsonStr = prefs.getString(KEY_HISTORY_JSON, null) ?: return emptyList()
+        val list = mutableListOf<JSONObject>()
+        try {
+            val array = JSONArray(jsonStr)
+            for (i in 0 until array.length()) {
+                list.add(array.getJSONObject(i))
+            }
+        } catch (e: Exception) {
+            Log.w("LastShareAppManager", "Failed to parse history: ${e.message}")
+        }
+        return list
+    }
 
-        return try {
-            val pm = context.packageManager
-            val iconDrawable = if (cls != null) {
-                try {
-                    pm.getActivityIcon(ComponentName(pkg, cls))
-                } catch (e: Exception) {
+    fun getLastSharedApp(context: Context): LastSharedApp? {
+        val recentList = getRecentSharedApps(context)
+        return recentList.firstOrNull()
+    }
+
+    suspend fun getRecentSharedAppsAsync(context: Context): List<LastSharedApp> = withContext(Dispatchers.IO) {
+        getRecentSharedApps(context)
+    }
+
+    fun getRecentSharedApps(context: Context): List<LastSharedApp> {
+        cachedRecentApps?.let { return it }
+        val pm = context.packageManager
+        val result = mutableListOf<LastSharedApp>()
+        val seenPackages = mutableSetOf<String>()
+
+        // 1. First add from saved history
+        val history = getHistoryEntries(context)
+        for (item in history) {
+            val pkg = item.optString("pkg")
+            if (pkg.isBlank() || seenPackages.contains(pkg)) continue
+            val cls = item.optString("cls").takeIf { it.isNotBlank() }
+            val name = item.optString("name").ifBlank { "アプリ" }
+
+            try {
+                val iconDrawable = if (cls != null) {
+                    try {
+                        pm.getActivityIcon(ComponentName(pkg, cls))
+                    } catch (e: Exception) {
+                        pm.getApplicationIcon(pkg)
+                    }
+                } else {
                     pm.getApplicationIcon(pkg)
                 }
-            } else {
-                pm.getApplicationIcon(pkg)
+                val bitmap = drawableToBitmap(iconDrawable)
+                result.add(
+                    LastSharedApp(
+                        packageName = pkg,
+                        className = cls,
+                        appName = name,
+                        iconBitmap = bitmap
+                    )
+                )
+                seenPackages.add(pkg)
+            } catch (_: Exception) {
+                // Ignore uninstalled apps
             }
-            val bitmap = drawableToBitmap(iconDrawable)
-            LastSharedApp(
-                packageName = pkg,
-                className = cls,
-                appName = name,
-                iconBitmap = bitmap
-            )
-        } catch (e: Exception) {
-            // App might have been uninstalled
-            null
         }
+
+        // 2. Also check single last saved app if not yet added
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val singlePkg = prefs.getString(KEY_PACKAGE, null)
+        if (singlePkg != null && !seenPackages.contains(singlePkg)) {
+            val singleCls = prefs.getString(KEY_CLASS, null)
+            val singleName = prefs.getString(KEY_NAME, null) ?: "アプリ"
+            try {
+                val iconDrawable = if (singleCls != null) {
+                    try {
+                        pm.getActivityIcon(ComponentName(singlePkg, singleCls))
+                    } catch (e: Exception) {
+                        pm.getApplicationIcon(singlePkg)
+                    }
+                } else {
+                    pm.getApplicationIcon(singlePkg)
+                }
+                result.add(
+                    LastSharedApp(
+                        packageName = singlePkg,
+                        className = singleCls,
+                        appName = singleName,
+                        iconBitmap = drawableToBitmap(iconDrawable)
+                    )
+                )
+                seenPackages.add(singlePkg)
+            } catch (_: Exception) {}
+        }
+
+        // 3. Complement with system text-sharing apps if list is short
+        try {
+            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+            }
+            val resolveInfos = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                pm.queryIntentActivities(shareIntent, PackageManager.ResolveInfoFlags.of(0))
+            } else {
+                @Suppress("DEPRECATION")
+                pm.queryIntentActivities(shareIntent, 0)
+            }
+
+            for (info in resolveInfos) {
+                if (result.size >= 8) break
+                val pkg = info.activityInfo.packageName
+                // Skip our own app
+                if (pkg == context.packageName || seenPackages.contains(pkg)) continue
+
+                val appName = info.loadLabel(pm).toString()
+                val iconDrawable = info.loadIcon(pm)
+                val bitmap = drawableToBitmap(iconDrawable)
+
+                result.add(
+                    LastSharedApp(
+                        packageName = pkg,
+                        className = info.activityInfo.name,
+                        appName = appName,
+                        iconBitmap = bitmap
+                    )
+                )
+                seenPackages.add(pkg)
+            }
+        } catch (e: Exception) {
+            Log.w("LastShareAppManager", "Failed to query system share apps: ${e.message}")
+        }
+
+        cachedRecentApps = result
+        return result
     }
 
     fun createShareChooserIntent(context: Context, text: String, title: String = "テキストを共有"): Intent {
@@ -131,6 +261,10 @@ object LastShareAppManager {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             context.startActivity(directIntent)
+            // Also record it into history
+            if (!lastApp.className.isNullOrBlank()) {
+                saveLastSharedApp(context, ComponentName(lastApp.packageName, lastApp.className))
+            }
             true
         } catch (e: Exception) {
             Log.w("LastShareAppManager", "Direct share failed: ${e.message}")

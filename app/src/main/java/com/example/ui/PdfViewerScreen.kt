@@ -10,13 +10,16 @@ import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -33,6 +36,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -42,8 +46,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.BrightnessAuto
@@ -164,6 +170,7 @@ fun PdfViewerScreen(
     onNextMatch: () -> Unit,
     onPrevMatch: () -> Unit,
     onPageTextRecognized: (Int, PageText) -> Unit = { _, _ -> },
+    availableShareApps: List<LastSharedApp> = emptyList(),
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -185,6 +192,14 @@ fun PdfViewerScreen(
     var activeSelectedText by remember { mutableStateOf<String?>(null) }
     var activeSelectedPage by remember { mutableStateOf<Int?>(null) }
     var activeSelectedWordIndices by remember { mutableStateOf<Set<Int>>(emptySet()) }
+    var isShareAppsDrawerVisible by remember { mutableStateOf(false) }
+
+    // Reset share apps drawer when selection changes/clears
+    LaunchedEffect(activeSelectedText) {
+        if (activeSelectedText == null) {
+            isShareAppsDrawerVisible = false
+        }
+    }
 
     // Zoom & Pan State (Pinch-to-zoom / Scale / Pan)
     var zoomScale by remember { mutableFloatStateOf(1f) }
@@ -464,68 +479,23 @@ fun PdfViewerScreen(
             }
         }
 
-        // Floating Direct Selection Action Bar (Copy / Share / Last App / Web Search - Chrome Style)
-        AnimatedVisibility(
-            visible = activeSelectedText != null,
-            enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
-            exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut(),
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .statusBarsPadding()
-                .padding(top = 72.dp)
-        ) {
-            val selText = activeSelectedText.orEmpty()
-            val lastApp = remember(activeSelectedText) { LastShareAppManager.getLastSharedApp(context) }
-
-            FloatingDirectTextActionBar(
-                selectedText = selText,
-                lastSharedApp = lastApp,
-                onCopy = {
-                    clipboardManager.setText(AnnotatedString(selText))
-                    Toast.makeText(context, "コピーしました", Toast.LENGTH_SHORT).show()
-                    activeSelectedText = null
-                    activeSelectedPage = null
-                    activeSelectedWordIndices = emptySet()
-                },
-                onShare = {
-                    try {
-                        val chooser = LastShareAppManager.createShareChooserIntent(context, selText)
-                        context.startActivity(chooser)
-                    } catch (e: Exception) {
-                        Toast.makeText(context, "共有できませんでした", Toast.LENGTH_SHORT).show()
-                    }
-                    activeSelectedText = null
-                    activeSelectedPage = null
-                    activeSelectedWordIndices = emptySet()
-                },
-                onDirectShare = { targetApp ->
-                    val success = LastShareAppManager.directShare(context, selText, targetApp)
-                    if (!success) {
-                        try {
-                            val chooser = LastShareAppManager.createShareChooserIntent(context, selText)
-                            context.startActivity(chooser)
-                        } catch (e: Exception) {
-                            Toast.makeText(context, "共有できませんでした", Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                    activeSelectedText = null
-                    activeSelectedPage = null
-                    activeSelectedWordIndices = emptySet()
-                },
-                onWebSearch = {
-                    try {
-                        val searchUri = Uri.parse("https://www.google.com/search?q=${Uri.encode(selText)}")
-                        val browserIntent = Intent(Intent.ACTION_VIEW, searchUri)
-                        context.startActivity(browserIntent)
-                    } catch (e: Exception) {
-                        Toast.makeText(context, "ブラウザを開けませんでした", Toast.LENGTH_SHORT).show()
-                    }
-                    activeSelectedText = null
-                    activeSelectedPage = null
-                    activeSelectedWordIndices = emptySet()
-                }
-            )
-        }
+        // Floating Direct Selection Action Bar (Copy / Share / Quick Share Apps / Web Search)
+        PdfSelectionActionOverlay(
+            selectedText = activeSelectedText,
+            availableApps = availableShareApps.ifEmpty {
+                remember(activeSelectedText) { LastShareAppManager.getRecentSharedApps(context) }
+            },
+            isShareAppsDrawerVisible = isShareAppsDrawerVisible,
+            clipboardManager = clipboardManager,
+            onDismissSelection = {
+                activeSelectedText = null
+                activeSelectedPage = null
+                activeSelectedWordIndices = emptySet()
+                isShareAppsDrawerVisible = false
+            },
+            onSetShareAppsDrawerVisible = { isShareAppsDrawerVisible = it },
+            modifier = Modifier.align(Alignment.BottomCenter)
+        )
 
         // Search Overlay UI (When in-document search is activated)
         PdfSearchOverlay(
@@ -762,127 +732,6 @@ fun PdfViewerScreen(
             onDismiss = onCloseRenameDialog,
             onConfirm = onRenameFile
         )
-    }
-}
-
-@Composable
-fun FloatingDirectTextActionBar(
-    selectedText: String,
-    lastSharedApp: LastSharedApp?,
-    onCopy: () -> Unit,
-    onShare: () -> Unit,
-    onDirectShare: (LastSharedApp) -> Unit,
-    onWebSearch: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        modifier = modifier
-            .padding(horizontal = 8.dp)
-            .shadow(12.dp, RoundedCornerShape(28.dp))
-            .testTag("floating_direct_selection_bar"),
-        shape = RoundedCornerShape(28.dp),
-        color = Color(0xFF282A2D),
-        border = BorderStroke(0.5.dp, Color(0xFF444746))
-    ) {
-        Row(
-            modifier = Modifier
-                .height(48.dp)
-                .padding(horizontal = 6.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            // 1. Web Search with Google G icon
-            TextButton(
-                onClick = onWebSearch,
-                colors = ButtonDefaults.textButtonColors(
-                    contentColor = Color(0xFFE8EAED)
-                ),
-                shape = RoundedCornerShape(20.dp),
-                modifier = Modifier
-                    .height(38.dp)
-                    .testTag("direct_action_search")
-            ) {
-                Icon(
-                    painter = painterResource(id = R.drawable.ic_google_g),
-                    contentDescription = null,
-                    tint = Color.Unspecified,
-                    modifier = Modifier.size(17.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = "Web Search",
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Medium,
-                    color = Color(0xFFE8EAED),
-                    fontSize = 13.sp
-                )
-            }
-
-            // 2. Copy
-            TextButton(
-                onClick = onCopy,
-                colors = ButtonDefaults.textButtonColors(
-                    contentColor = Color(0xFFE8EAED)
-                ),
-                shape = RoundedCornerShape(20.dp),
-                modifier = Modifier
-                    .height(38.dp)
-                    .testTag("direct_action_copy")
-            ) {
-                Text(
-                    text = "Copy",
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Medium,
-                    color = Color(0xFFE8EAED),
-                    fontSize = 13.sp
-                )
-            }
-
-            // 3. Share
-            TextButton(
-                onClick = onShare,
-                colors = ButtonDefaults.textButtonColors(
-                    contentColor = Color(0xFFE8EAED)
-                ),
-                shape = RoundedCornerShape(20.dp),
-                modifier = Modifier
-                    .height(38.dp)
-                    .testTag("direct_action_share")
-            ) {
-                Text(
-                    text = "Share",
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Medium,
-                    color = Color(0xFFE8EAED),
-                    fontSize = 13.sp
-                )
-            }
-
-            // 4. Last Shared App Icon Button (Direct share to previous target app)
-            if (lastSharedApp != null && lastSharedApp.iconBitmap != null) {
-                Surface(
-                    onClick = { onDirectShare(lastSharedApp) },
-                    shape = CircleShape,
-                    color = Color(0xFF383B40),
-                    modifier = Modifier
-                        .padding(start = 2.dp, end = 6.dp)
-                        .size(36.dp)
-                        .testTag("direct_action_share_last_app")
-                ) {
-                    Box(
-                        contentAlignment = Alignment.Center,
-                        modifier = Modifier.fillMaxSize()
-                    ) {
-                        Image(
-                            bitmap = lastSharedApp.iconBitmap.asImageBitmap(),
-                            contentDescription = "${lastSharedApp.appName} に送信",
-                            modifier = Modifier
-                                .size(24.dp)
-                                .clip(CircleShape)
-                        )
-                    }
-                }
-            }
-        }
     }
 }
 

@@ -115,6 +115,16 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        com.example.pdf.PdfEngine.handleTrimMemory(level)
+    }
+
+    override fun onLowMemory() {
+        super.onLowMemory()
+        com.example.pdf.PdfEngine.handleLowMemory()
+    }
 }
 
 @Composable
@@ -138,6 +148,7 @@ fun PdfApp(
     val isTextSelectModalOpen by viewModel.isTextSelectModalOpen.collectAsStateWithLifecycle()
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
     val errorMessage by viewModel.errorMessage.collectAsStateWithLifecycle()
+    val recentSharedApps by viewModel.recentSharedApps.collectAsStateWithLifecycle()
 
     // Back handler: if PDF is open, close it and return to history
     BackHandler(enabled = activePdfItem != null) {
@@ -201,7 +212,8 @@ fun PdfApp(
                             onSearchQueryChanged = { viewModel.onSearchQueryChanged(it) },
                             onNextMatch = { viewModel.nextSearchMatch() },
                             onPrevMatch = { viewModel.prevSearchMatch() },
-                            onPageTextRecognized = { pageIdx, text -> viewModel.updatePageText(pageIdx, text) }
+                            onPageTextRecognized = { pageIdx, text -> viewModel.updatePageText(pageIdx, text) },
+                            availableShareApps = recentSharedApps
                         )
                     }
                 }

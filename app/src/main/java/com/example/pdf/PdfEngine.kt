@@ -1,9 +1,10 @@
 package com.example.pdf
 
+import android.content.ComponentCallbacks2
 import android.content.Context
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Color
-import android.graphics.Matrix
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.ParcelFileDescriptor
@@ -15,6 +16,16 @@ import java.io.File
 import java.io.FileOutputStream
 import java.security.MessageDigest
 
+/**
+ * Type-safe, structured cache key for rendered PDF page bitmaps.
+ * Avoids fragile string concatenation and delimiter parsing.
+ */
+data class PageCacheKey(
+    val filePath: String,
+    val pageIndex: Int,
+    val targetWidth: Int
+)
+
 class PdfEngine(
     private val context: Context,
     private val localPdfFile: File
@@ -23,12 +34,105 @@ class PdfEngine(
     companion object {
         private const val TAG = "PdfEngine"
 
-        // Global memory cache for rendered page bitmaps
-        private val maxMemory = (Runtime.getRuntime().maxMemory() / 1024).toInt()
-        private val cacheSize = maxMemory / 6 // Use 1/6th of available runtime memory
-        private val bitmapCache = object : LruCache<String, Bitmap>(cacheSize) {
-            override fun sizeOf(key: String, bitmap: Bitmap): Int {
-                return bitmap.byteCount / 1024
+        // Dynamic memory-aware LRU Cache
+        private val maxMemoryKb = (Runtime.getRuntime().maxMemory() / 1024).toInt()
+        // Default to 1/6th of available memory or max 128MB
+        private val defaultCacheCapacityKb = (maxMemoryKb / 6).coerceIn(16 * 1024, 128 * 1024)
+
+        private val bitmapCache = object : LruCache<PageCacheKey, Bitmap>(defaultCacheCapacityKb) {
+            override fun sizeOf(key: PageCacheKey, bitmap: Bitmap): Int {
+                return (bitmap.byteCount / 1024).coerceAtLeast(1)
+            }
+
+            override fun entryRemoved(
+                evicted: Boolean,
+                key: PageCacheKey,
+                oldValue: Bitmap,
+                newValue: Bitmap?
+            ) {
+                super.entryRemoved(evicted, key, oldValue, newValue)
+                if (evicted) {
+                    Log.d(TAG, "LRU Evicted page bitmap from cache: page ${key.pageIndex} of ${key.filePath} (size: ${oldValue.byteCount / 1024} KB)")
+                }
+            }
+        }
+
+        private var isComponentCallbacksRegistered = false
+
+        /**
+         * Initializes automatic memory pressure callbacks to release off-screen/cached bitmaps.
+         */
+        fun initMemoryPressureCallbacks(appContext: Context) {
+            if (isComponentCallbacksRegistered) return
+            synchronized(this) {
+                if (isComponentCallbacksRegistered) return
+                val app = appContext.applicationContext
+                app.registerComponentCallbacks(object : ComponentCallbacks2 {
+                    override fun onTrimMemory(level: Int) {
+                        handleTrimMemory(level)
+                    }
+
+                    override fun onConfigurationChanged(newConfig: Configuration) {}
+
+                    override fun onLowMemory() {
+                        handleLowMemory()
+                    }
+                })
+                isComponentCallbacksRegistered = true
+                Log.d(TAG, "Initialized PdfEngine memory pressure callbacks (Cache Capacity: ${defaultCacheCapacityKb / 1024}MB)")
+            }
+        }
+
+        fun handleTrimMemory(level: Int) {
+            Log.i(TAG, "onTrimMemory triggered with level: $level (current cache size: ${bitmapCache.size() / 1024}MB)")
+            when {
+                level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL -> {
+                    // Extreme memory pressure - evict all non-critical cached pages immediately
+                    bitmapCache.evictAll()
+                    Log.w(TAG, "Evicted all PDF bitmap caches due to TRIM_MEMORY_RUNNING_CRITICAL")
+                }
+                level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW ||
+                level >= ComponentCallbacks2.TRIM_MEMORY_COMPLETE -> {
+                    // Moderate-high pressure: trim cache to 25%
+                    bitmapCache.trimToSize(defaultCacheCapacityKb / 4)
+                    Log.i(TAG, "Trimmed PDF bitmap cache to 25% (${bitmapCache.size() / 1024}MB)")
+                }
+                level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_MODERATE ||
+                level >= ComponentCallbacks2.TRIM_MEMORY_MODERATE ||
+                level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN -> {
+                    // App backgrounded or moderate pressure: trim cache to 50%
+                    bitmapCache.trimToSize(defaultCacheCapacityKb / 2)
+                    Log.i(TAG, "Trimmed PDF bitmap cache to 50% (${bitmapCache.size() / 1024}MB)")
+                }
+            }
+        }
+
+        fun handleLowMemory() {
+            Log.w(TAG, "onLowMemory triggered: clearing entire PDF bitmap LRU cache")
+            bitmapCache.evictAll()
+        }
+
+        /**
+         * Evicts cached bitmaps for pages that are not in the provided set of visible/nearby pages.
+         */
+        fun evictOffScreenBitmaps(filePath: String, keepPages: Set<Int>) {
+            val snapshot = bitmapCache.snapshot()
+            for ((key, _) in snapshot) {
+                if (key.filePath == filePath && key.pageIndex !in keepPages) {
+                    bitmapCache.remove(key)
+                }
+            }
+        }
+
+        /**
+         * Clears all cached bitmaps for a specific PDF file.
+         */
+        fun clearCacheForFile(filePath: String) {
+            val snapshot = bitmapCache.snapshot()
+            for ((key, _) in snapshot) {
+                if (key.filePath == filePath) {
+                    bitmapCache.remove(key)
+                }
             }
         }
 
@@ -100,7 +204,7 @@ class PdfEngine(
     }
 
     fun getCachedBitmap(pageIndex: Int, targetWidth: Int = 1080): Bitmap? {
-        val cacheKey = "${localPdfFile.absolutePath}_p${pageIndex}_w$targetWidth"
+        val cacheKey = PageCacheKey(localPdfFile.absolutePath, pageIndex, targetWidth)
         val cached = bitmapCache.get(cacheKey)
         return if (cached != null && !cached.isRecycled) cached else null
     }
@@ -111,7 +215,7 @@ class PdfEngine(
         densityDpi: Float = 2.0f
     ): Bitmap? = withContext(Dispatchers.Default) {
         if (pageIndex < 0 || pageIndex >= pageCount) return@withContext null
-        val cacheKey = "${localPdfFile.absolutePath}_p${pageIndex}_w$targetWidth"
+        val cacheKey = PageCacheKey(localPdfFile.absolutePath, pageIndex, targetWidth)
 
         bitmapCache.get(cacheKey)?.let { cached ->
             if (!cached.isRecycled) return@withContext cached

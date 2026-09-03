@@ -13,6 +13,9 @@ import com.example.pdf.PdfEngine
 import com.example.pdf.PdfTextExtractor
 import com.example.pdf.SearchMatch
 import com.example.ui.theme.ThemeMode
+import com.example.util.LastShareAppManager
+import com.example.util.LastSharedApp
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -20,6 +23,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 class PdfViewerViewModel(application: Application) : AndroidViewModel(application) {
@@ -99,12 +103,17 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
     private val _isOcrPreparing = MutableStateFlow(false)
     val isOcrPreparing: StateFlow<Boolean> = _isOcrPreparing.asStateFlow()
 
+    // Quick-share apps loaded asynchronously on IO thread to prevent UI thread jank
+    private val _recentSharedApps = MutableStateFlow<List<LastSharedApp>>(emptyList())
+    val recentSharedApps: StateFlow<List<LastSharedApp>> = _recentSharedApps.asStateFlow()
+
     fun prepareIncomingIntent() {
         _isPendingIntentOpen.value = true
         _isLoading.value = true
     }
 
     init {
+        PdfEngine.initMemoryPressureCallbacks(application)
         PdfTextExtractor.init(application)
         PdfTextExtractor.onOcrModelStatusListener = { isPreparing, msg ->
             _isOcrPreparing.value = isPreparing
@@ -119,6 +128,18 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
             started = SharingStarted.WhileSubscribed(5000),
             initialValue = emptyList()
         )
+        loadRecentSharedApps()
+    }
+
+    fun loadRecentSharedApps() {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val apps = LastShareAppManager.getRecentSharedApps(getApplication())
+                _recentSharedApps.value = apps
+            } catch (e: Exception) {
+                // Ignore failure
+            }
+        }
     }
 
     fun openPdf(uri: Uri) {
