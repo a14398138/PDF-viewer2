@@ -99,7 +99,7 @@ class PdfRepository(
                     val generatedThumb = engine.generateAndSaveThumbnail()
                     engine.close()
                     if (!generatedThumb.isNullOrEmpty()) {
-                        dao.insert(itemToSave.copy(thumbnailPath = generatedThumb))
+                        dao.updateThumbnail(itemToSave.uriString, generatedThumb)
                     }
                 } catch (e: Exception) {
                     Log.w(TAG, "Async thumbnail generation failed: ${e.message}")
@@ -168,7 +168,7 @@ class PdfRepository(
                     val generatedThumb = engine.generateAndSaveThumbnail()
                     engine.close()
                     if (!generatedThumb.isNullOrEmpty()) {
-                        dao.insert(updatedItem.copy(thumbnailPath = generatedThumb))
+                        dao.updateThumbnail(updatedItem.uriString, generatedThumb)
                     }
                 } catch (e: Exception) {
                     Log.w(TAG, "Async thumbnail generation in openFromHistory failed: ${e.message}")

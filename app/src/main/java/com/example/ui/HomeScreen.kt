@@ -96,7 +96,8 @@ fun HomeScreen(
     onOpenSamplePdf: () -> Unit,
     onDeleteHistoryItem: (PdfItem) -> Unit,
     onClearAllHistory: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onOpenRenamer: () -> Unit = {}
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var searchQuery by remember { mutableStateOf("") }
@@ -184,6 +185,10 @@ fun HomeScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = onOpenRenamer,
+                        modifier = Modifier.testTag("open_paper_renamer")) {
+                        Icon(Icons.Default.AutoAwesome, contentDescription = "論文PDFリネーム")
+                    }
                     IconButton(
                         onClick = {
                             isSearchExpanded = !isSearchExpanded

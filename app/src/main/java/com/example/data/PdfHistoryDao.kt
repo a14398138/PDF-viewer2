@@ -9,6 +9,15 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface PdfHistoryDao {
+    @Query("UPDATE pdf_history SET thumbnailPath = :path WHERE uriString = :uri")
+    suspend fun updateThumbnail(uri: String, path: String)
+
+    @Query("SELECT * FROM pdf_history")
+    suspend fun getAllHistorySync(): List<PdfItem>
+
+    @Query("UPDATE pdf_history SET uriString = :uri, fileName = :name WHERE id = :id")
+    suspend fun updateRenamedDocument(id: Long, uri: String, name: String)
+
     @Query("SELECT * FROM pdf_history ORDER BY lastViewedTimestamp DESC")
     fun getAllHistory(): Flow<List<PdfItem>>
 

@@ -25,6 +25,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import com.example.renamer.RenamerScreen
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -133,6 +137,7 @@ fun PdfApp(
     themeMode: ThemeMode = ThemeMode.SYSTEM,
     onThemeModeChanged: (ThemeMode) -> Unit = {}
 ) {
+    var showRenamer by rememberSaveable { mutableStateOf(false) }
     val historyList by viewModel.historyList.collectAsStateWithLifecycle()
     val activePdfItem by viewModel.activePdfItem.collectAsStateWithLifecycle()
     val isPendingIntentOpen by viewModel.isPendingIntentOpen.collectAsStateWithLifecycle()
@@ -174,12 +179,17 @@ fun PdfApp(
             targetState = when {
                 activePdfItem != null -> "viewer"
                 isPendingIntentOpen -> "intent_loading"
+                showRenamer -> "renamer"
                 else -> "home"
             },
             transitionSpec = { fadeIn() togetherWith fadeOut() },
             label = "ScreenTransition"
         ) { screenState ->
             when (screenState) {
+                "renamer" -> RenamerScreen(
+                    onBack = { showRenamer = false },
+                    onOpenPdf = { viewModel.openPdf(it) }
+                )
                 "viewer" -> {
                     val currentItem = activePdfItem
                     if (currentItem != null) {
@@ -232,6 +242,7 @@ fun PdfApp(
                 }
                 else -> {
                     HomeScreen(
+                        onOpenRenamer = { showRenamer = true },
                         historyList = historyList,
                         themeMode = themeMode,
                         onThemeModeChanged = onThemeModeChanged,
