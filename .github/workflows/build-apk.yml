@@ -11,6 +11,9 @@ on:
       - master
   workflow_dispatch: # GitHubのActionsタブから手動で実行可能
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build Debug APK
@@ -50,3 +53,23 @@ jobs:
           path: app/build/outputs/apk/debug/*.apk
           retention-days: 14
           overwrite: true
+
+      - name: Publish APK to GitHub Release (Direct Download)
+        if: (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')) || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          target_commitish: ${{ github.sha }}
+          name: "Latest Debug Build"
+          body: |
+            ## 📱 最新 Debug APK (解凍不要)
+            ZIP解凍なしで直接端末にダウンロード・インストールできる `.apk` ファイルです。
+            
+            - **直接ダウンロード**: [app-debug.apk](https://github.com/${{ github.repository }}/releases/download/latest/app-debug.apk)
+            - ビルド番号: #${{ github.run_number }}
+            - コミット: ${{ github.sha }}
+          prerelease: true
+          make_latest: true
+          files: app/build/outputs/apk/debug/app-debug.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

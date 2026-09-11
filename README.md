@@ -2,6 +2,12 @@
 
 PDFの閲覧・検索・メモ・共有に、Paper Renamer v1.0.2の論文PDF整理機能を統合しています。
 
+## 📱 APKダウンロード (解凍不要)
+ZIP 解凍なしで直接インストールできる最新の `.apk` ファイルです：
+- ⬇️ **[最新版 APK を直接ダウンロード (app-debug.apk)](https://github.com/a14398138/PDF-viewer2/releases/download/latest/app-debug.apk)**
+- 📦 [Releases ページで確認する](https://github.com/a14398138/PDF-viewer2/releases)
+
+
 ## 論文PDFリネーム
 
 1. ホーム右上の「論文PDFリネーム」（星アイコン）を開きます。
