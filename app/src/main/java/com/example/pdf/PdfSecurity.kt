@@ -2,7 +2,7 @@ package com.example.pdf
 
 import android.content.Context
 import com.tom_roush.pdfbox.pdmodel.PDDocument
-import com.tom_roush.pdfbox.util.PDFBoxResourceLoader
+import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import java.io.File
 
 /** Keeps the original encrypted document intact; passwords are never persisted. */
