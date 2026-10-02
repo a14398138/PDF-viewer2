@@ -171,6 +171,7 @@ fun PdfViewerScreen(
     onPrevMatch: () -> Unit,
     onPageTextRecognized: (Int, PageText) -> Unit = { _, _ -> },
     availableShareApps: List<LastSharedApp> = emptyList(),
+    onSaveWithoutPassword: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -385,6 +386,14 @@ fun PdfViewerScreen(
                                     shape = RoundedCornerShape(16.dp),
                                     containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
                                 ) {
+                                    DropdownMenuItem(
+                                        text = { Text("パスワードなしで保存") },
+                                        onClick = {
+                                            menuExpanded = false
+                                            onSaveWithoutPassword()
+                                        },
+                                        modifier = Modifier.testTag("menu_save_unencrypted")
+                                    )
                                     // 1. メモを書く
                                     DropdownMenuItem(
                                         text = { Text("メモを書く", fontWeight = FontWeight.Medium) },

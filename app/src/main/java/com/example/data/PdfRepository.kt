@@ -27,7 +27,7 @@ class PdfRepository(
 
     fun getHistoryByUri(uriString: String): Flow<PdfItem?> = dao.getByUri(uriString)
 
-    suspend fun openAndRecordPdf(uri: Uri, overrideFileName: String? = null): Pair<PdfItem, List<PageText>> = withContext(Dispatchers.IO) {
+    suspend fun openAndRecordPdf(uri: Uri, overrideFileName: String? = null, password: String = ""): Pair<PdfItem, List<PageText>> = withContext(Dispatchers.IO) {
         val uriString = uri.toString()
         val existingItem = dao.getByUriSync(uriString)
 
@@ -54,19 +54,9 @@ class PdfRepository(
 
         val fileSize = localFile.length()
 
-        var pageCount = existingItem?.pageCount ?: 1
-        var thumbPath: String? = existingItem?.thumbnailPath
-
-        // Fast probe for pageCount using ParcelFileDescriptor
-        try {
-            val pfd = ParcelFileDescriptor.open(localFile, ParcelFileDescriptor.MODE_READ_ONLY)
-            val renderer = android.graphics.pdf.PdfRenderer(pfd)
-            pageCount = renderer.pageCount
-            renderer.close()
-            pfd.close()
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to probe pageCount: ${e.message}", e)
-        }
+        // Authenticate before recording history or attempting rendering.
+        val pageCount = com.example.pdf.PdfSecurity.pageCount(context, localFile, password)
+        val thumbPath = existingItem?.thumbnailPath
 
         val initialPages = (0 until pageCount).map { i ->
             PageText(pageIndex = i, fullText = "", paragraphs = emptyList(), lines = emptyList())

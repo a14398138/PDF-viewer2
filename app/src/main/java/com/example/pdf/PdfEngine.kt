@@ -28,7 +28,8 @@ data class PageCacheKey(
 
 class PdfEngine(
     private val context: Context,
-    private val localPdfFile: File
+    private val localPdfFile: File,
+    password: String = ""
 ) : AutoCloseable {
 
     companion object {
@@ -178,13 +179,19 @@ class PdfEngine(
     private var fileDescriptor: ParcelFileDescriptor? = null
     private var pdfRenderer: PdfRenderer? = null
 
-    val file: File = localPdfFile
+    val file: File = PdfSecurity.prepareForRendering(context, localPdfFile, password)
     val pageCount: Int
 
     init {
-        fileDescriptor = ParcelFileDescriptor.open(localPdfFile, ParcelFileDescriptor.MODE_READ_ONLY)
-        pdfRenderer = PdfRenderer(fileDescriptor!!)
-        pageCount = pdfRenderer?.pageCount ?: 0
+        try {
+            fileDescriptor = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+            pdfRenderer = PdfRenderer(fileDescriptor!!)
+            pageCount = pdfRenderer?.pageCount ?: 0
+        } catch (error: Throwable) {
+            fileDescriptor?.close()
+            if (file != localPdfFile) file.delete()
+            throw error
+        }
     }
 
     fun getPageDimensions(pageIndex: Int): Pair<Int, Int> {
@@ -284,7 +291,10 @@ class PdfEngine(
         }
     }
 
+    @Synchronized
     override fun close() {
+        clearCacheForFile(localPdfFile.absolutePath)
+        if (file != localPdfFile) file.delete()
         try {
             pdfRenderer?.close()
             pdfRenderer = null

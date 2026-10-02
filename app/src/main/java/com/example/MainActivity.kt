@@ -155,6 +155,47 @@ fun PdfApp(
     val errorMessage by viewModel.errorMessage.collectAsStateWithLifecycle()
     val recentSharedApps by viewModel.recentSharedApps.collectAsStateWithLifecycle()
 
+    val passwordRequired by viewModel.passwordRequired.collectAsStateWithLifecycle()
+    val passwordError by viewModel.passwordError.collectAsStateWithLifecycle()
+    val savePdfLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.CreateDocument("application/pdf")
+    ) { uri -> uri?.let { viewModel.saveWithoutPassword(it) } }
+
+    if (passwordRequired) {
+        var password by androidx.compose.runtime.remember { mutableStateOf("") }
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { if (!isLoading) viewModel.cancelPassword() },
+            title = { androidx.compose.material3.Text("PDFのパスワード") },
+            text = {
+                androidx.compose.material3.OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    label = { androidx.compose.material3.Text("パスワード") },
+                    singleLine = true,
+                    enabled = !isLoading,
+                    isError = passwordError != null,
+                    supportingText = { androidx.compose.material3.Text(passwordError ?: "開くためのパスワードを入力してください") },
+                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                        keyboardType = androidx.compose.ui.text.input.KeyboardType.Password
+                    )
+                )
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(
+                    enabled = !isLoading,
+                    onClick = { viewModel.submitPassword(password); password = "" }
+                ) { androidx.compose.material3.Text(if (isLoading) "確認中…" else "開く") }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(
+                    enabled = !isLoading,
+                    onClick = { viewModel.cancelPassword() }
+                ) { androidx.compose.material3.Text("キャンセル") }
+            }
+        )
+    }
+
     // Back handler: if PDF is open, close it and return to history
     BackHandler(enabled = activePdfItem != null) {
         if (isSearchActive) {
@@ -223,6 +264,9 @@ fun PdfApp(
                             onNextMatch = { viewModel.nextSearchMatch() },
                             onPrevMatch = { viewModel.prevSearchMatch() },
                             onPageTextRecognized = { pageIdx, text -> viewModel.updatePageText(pageIdx, text) },
+                            onSaveWithoutPassword = {
+                                savePdfLauncher.launch(currentItem.fileName.substringBeforeLast('.', currentItem.fileName) + "_unlocked.pdf")
+                            },
                             availableShareApps = recentSharedApps
                         )
                     }

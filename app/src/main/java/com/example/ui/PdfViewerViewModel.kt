@@ -142,44 +142,57 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    fun openPdf(uri: Uri) {
-        viewModelScope.launch {
+    private var pendingPdfUri: Uri? = null
+    private val _passwordRequired = MutableStateFlow(false)
+    val passwordRequired = _passwordRequired.asStateFlow()
+    private val _passwordError = MutableStateFlow<String?>(null)
+    val passwordError = _passwordError.asStateFlow()
+    private var openJob: Job? = null
+
+    fun cancelPassword() {
+        pendingPdfUri = null
+        _passwordRequired.value = false
+        _passwordError.value = null
+    }
+
+    fun submitPassword(password: String) {
+        pendingPdfUri?.let { openPdf(it, password) }
+    }
+
+    fun openPdf(uri: Uri, password: String? = null) {
+        if (_isLoading.value && openJob?.isActive == true) return
+        if (password == null) cancelPassword()
+        openJob = viewModelScope.launch {
             _isLoading.value = true
             _errorMessage.value = null
             try {
-                backgroundTextJob?.cancel()
-                currentEngine?.close()
-                currentEngine = null
-
-                val (item, extractedPages) = repository.openAndRecordPdf(uri)
-                val targetPage = item.lastOpenedPage.coerceIn(0, (item.pageCount - 1).coerceAtLeast(0))
-
-                // Open engine instance for rendering
-                val file = item.filePath?.let { File(it) }
-                if (file != null && file.exists()) {
-                    val engine = PdfEngine(getApplication(), file)
-                    currentEngine = engine
-
-                    // Pre-render active page immediately so it is instantly available in memory cache
-                    engine.renderPageBitmap(targetPage)
-
-                    _activePdfItem.value = item
-                    _activePagesText.value = extractedPages
-                    _currentPage.value = targetPage
-                    _isControlsVisible.value = true
-                    closeSearch()
-                    _selectedText.value = null
-
-                    startBackgroundTextExtraction(engine, file, item.pageCount, targetPage)
-                } else {
-                    _activePdfItem.value = item
-                    _activePagesText.value = extractedPages
-                    _currentPage.value = targetPage
-                    _isControlsVisible.value = true
-                    closeSearch()
-                    _selectedText.value = null
+                val (item, extractedPages) = repository.openAndRecordPdf(uri, password = password ?: "")
+                val source = File(requireNotNull(item.filePath))
+                val engine = withContext(Dispatchers.IO) {
+                    PdfEngine(getApplication(), source, password ?: "")
                 }
+                backgroundTextJob?.cancel()
+                backgroundTextJob?.join()
+                currentEngine?.close()
+                currentEngine = engine
+                val targetPage = item.lastOpenedPage.coerceIn(0, (item.pageCount - 1).coerceAtLeast(0))
+                engine.renderPageBitmap(targetPage)
+                _activePdfItem.value = item
+                _activePagesText.value = extractedPages
+                _currentPage.value = targetPage
+                _isControlsVisible.value = true
+                closeSearch()
+                _selectedText.value = null
+                cancelPassword()
+                startBackgroundTextExtraction(engine, engine.file, item.pageCount, targetPage)
+            } catch (e: com.tom_roush.pdfbox.pdmodel.encryption.InvalidPasswordException) {
+                pendingPdfUri = uri
+                _passwordRequired.value = true
+                _passwordError.value = if (password == null) null else "パスワードが違います。もう一度入力してください。"
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
+                cancelPassword()
                 _errorMessage.value = "PDFを開けませんでした: ${e.localizedMessage}"
             } finally {
                 _isPendingIntentOpen.value = false
@@ -189,40 +202,37 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun openPdfItem(historyItem: PdfItem) {
+        openPdf(Uri.parse(historyItem.uriString))
+    }
+
+    fun saveWithoutPassword(destination: Uri) {
+        val engine = currentEngine ?: return
+        val item = _activePdfItem.value ?: return
+        if (destination.toString() == item.uriString) {
+            _errorMessage.value = "元のPDFとは別のファイル名で保存してください。"
+            return
+        }
         viewModelScope.launch {
             _isLoading.value = true
-            _errorMessage.value = null
             try {
-                backgroundTextJob?.cancel()
-                currentEngine?.close()
-                currentEngine = null
-
-                val (item, extractedPages) = repository.openFromHistory(historyItem)
-                val targetPage = item.lastOpenedPage.coerceIn(0, (item.pageCount - 1).coerceAtLeast(0))
-
-                val file = item.filePath?.let { File(it) }
-                if (file != null && file.exists()) {
-                    val engine = PdfEngine(getApplication(), file)
-                    currentEngine = engine
-
-                    // Pre-render active page immediately
-                    engine.renderPageBitmap(targetPage)
-
-                    _activePdfItem.value = item
-                    _activePagesText.value = extractedPages
-                    _currentPage.value = targetPage
-                    _isControlsVisible.value = true
-                    closeSearch()
-                    _selectedText.value = null
-
-                    startBackgroundTextExtraction(engine, file, item.pageCount, targetPage)
-                } else {
-                    throw IllegalStateException("ファイルが見つかりません")
+                withContext(Dispatchers.IO) {
+                    val context = getApplication<Application>()
+                    val temporary = File.createTempFile("export_", ".pdf", context.cacheDir)
+                    try {
+                        com.example.pdf.PdfSecurity.saveWithoutPassword(context, engine.file, temporary)
+                        val output = context.contentResolver.openOutputStream(destination, "wt")
+                            ?: throw java.io.IOException("保存先を開けません")
+                        output.use { out -> temporary.inputStream().use { it.copyTo(out) } }
+                    } finally {
+                        temporary.delete()
+                    }
                 }
+                _errorMessage.value = "パスワードなしのPDFを保存しました"
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
-                _errorMessage.value = "PDFを開けませんでした: ${e.localizedMessage}"
+                _errorMessage.value = "保存できませんでした: ${e.localizedMessage}"
             } finally {
-                _isPendingIntentOpen.value = false
                 _isLoading.value = false
             }
         }
@@ -386,6 +396,9 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
     fun getPdfEngine(): PdfEngine? = currentEngine
 
     fun closePdf() {
+        if (_isLoading.value) return
+        backgroundTextJob?.cancel()
+        cancelPassword()
         val currentItem = _activePdfItem.value
         if (currentItem != null) {
             viewModelScope.launch {
