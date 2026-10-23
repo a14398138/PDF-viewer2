@@ -87,6 +87,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -113,6 +114,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -121,6 +123,9 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.ui.res.painterResource
 import com.example.R
 import com.example.data.PdfItem
@@ -188,6 +193,31 @@ fun PdfViewerScreen(
     }
 
     var menuExpanded by remember { mutableStateOf(false) }
+
+    // ツールバー (isControlsVisible) とステータスバーを連動させる
+    // - MainActivity で enableEdgeToEdge() 済みなので、hide してもレイアウトは崩れない
+    // - 検索を開くと ViewModel.openSearch() が isControlsVisible = true に戻すため、
+    //   検索中は自動でステータスバーも再表示される
+    val view = LocalView.current
+    val insetsController = remember(view, activity) {
+        activity?.window?.let { window -> WindowCompat.getInsetsController(window, view) }
+    }
+    LaunchedEffect(isControlsVisible, insetsController) {
+        val controller = insetsController ?: return@LaunchedEffect
+        controller.systemBarsBehavior =
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        if (isControlsVisible) {
+            controller.show(WindowInsetsCompat.Type.statusBars())
+        } else {
+            controller.hide(WindowInsetsCompat.Type.statusBars())
+        }
+    }
+    // Viewer を離れたら (Home に戻る等) 必ずステータスバーを戻す
+    DisposableEffect(insetsController) {
+        onDispose {
+            insetsController?.show(WindowInsetsCompat.Type.statusBars())
+        }
+    }
 
     // Direct On-Page Word Selection State
     var activeSelectedText by remember { mutableStateOf<String?>(null) }
