@@ -95,6 +95,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -533,6 +534,7 @@ fun PdfViewerScreen(
                 isShareAppsDrawerVisible = false
             },
             onSetShareAppsDrawerVisible = { isShareAppsDrawerVisible = it },
+            isControlsVisible = isControlsVisible,
             modifier = Modifier.align(Alignment.BottomCenter)
         )
 
@@ -813,6 +815,35 @@ fun PdfPageItem(
     val words = remember(pageText) { pageText?.words.orEmpty() }
     val currentBitmap = pageBitmapState.value
 
+    // On-demand extraction for this page. The ViewModel's background job walks
+    // pages in order from the top, so a page the user jumped straight to (e.g.
+    // the end of a long document) has no words — and therefore no working text
+    // selection — until the job eventually reaches it. Extract just this page
+    // when it is displayed without words.
+    //
+    // The settle delay matters: without it, fast scrolling fired a heavy
+    // PDFBox load + OCR for every page that flashed past, and the contention
+    // made scrolling stutter. Pages that scroll by quickly leave composition
+    // (or get new keys) and cancel this effect long before the delay elapses;
+    // only a page the user actually stops on gets extracted.
+    var textExtractionAttempted by remember(pdfEngine, pageIndex) { mutableStateOf(false) }
+    LaunchedEffect(pdfEngine, pageIndex, pageText, currentBitmap) {
+        val engine = pdfEngine ?: return@LaunchedEffect
+        if (textExtractionAttempted) return@LaunchedEffect
+        if (!pageText?.words.isNullOrEmpty()) return@LaunchedEffect
+        // Wait for the bitmap so the OCR fallback can run on image-only pages
+        val bitmap = currentBitmap ?: return@LaunchedEffect
+        // One beat of settle time before doing any heavy work
+        // (600ms was still short enough that slow-ish scrolling triggered
+        // extraction mid-scroll; 1.5s keeps it for pages the user stops on)
+        kotlinx.coroutines.delay(1500)
+        textExtractionAttempted = true
+        val recognized = PdfTextExtractor.extractPageText(engine.file, bitmap, pageIndex)
+        if (recognized.words.isNotEmpty()) {
+            onPageTextRecognized(recognized)
+        }
+    }
+
     var dragStartWordIndex by remember { mutableStateOf<Int?>(null) }
 
     Surface(
@@ -916,15 +947,15 @@ fun PdfPageItem(
             }
 
             // Helper function to find closest word index given page coordinates
-            fun findClosestWordIndex(relX: Float, relY: Float): Int {
-                if (words.isEmpty()) return 0
-                val hit = words.indexOfFirst { w ->
+            fun findClosestWordIndex(wordList: List<TextWord>, relX: Float, relY: Float): Int {
+                if (wordList.isEmpty()) return 0
+                val hit = wordList.indexOfFirst { w ->
                     relX >= (w.relX - 0.02f) && relX <= (w.relX + w.relWidth + 0.02f) &&
                     relY >= (w.relY - 0.015f) && relY <= (w.relY + w.relHeight + 0.015f)
                 }
                 return if (hit != -1) hit else {
-                    words.indices.minByOrNull { i ->
-                        val w = words[i]
+                    wordList.indices.minByOrNull { i ->
+                        val w = wordList[i]
                         val dy = (w.relY + w.relHeight / 2f) - relY
                         val dx = (w.relX + w.relWidth / 2f) - relX
                         (dy * 3f) * (dy * 3f) + dx * dx
@@ -952,7 +983,7 @@ fun PdfPageItem(
                                 if (words.isNotEmpty()) {
                                     val relX = startOffset.x / pageWPx
                                     val relY = startOffset.y / pageHPx
-                                    val hitIndex = findClosestWordIndex(relX, relY)
+                                    val hitIndex = findClosestWordIndex(words, relX, relY)
                                     dragStartWordIndex = hitIndex
                                     val selectedIndices = setOf(hitIndex)
                                     val text = words[hitIndex].text
@@ -964,7 +995,7 @@ fun PdfPageItem(
                                 if (startIdx != null && words.isNotEmpty()) {
                                     val curRelX = change.position.x / pageWPx
                                     val curRelY = change.position.y / pageHPx
-                                    val curIndex = findClosestWordIndex(curRelX, curRelY)
+                                    val curIndex = findClosestWordIndex(words, curRelX, curRelY)
 
                                     val minIdx = min(startIdx, curIndex)
                                     val maxIdx = max(startIdx, curIndex)
@@ -999,6 +1030,13 @@ fun PdfPageItem(
                 val handleTouchSizeDp = 44.dp
                 val handleTouchRadiusPx = with(density) { (handleTouchSizeDp / 2).toPx() }
 
+                // Handle gestures read the latest selection through rememberUpdatedState.
+                // They must NOT key pointerInput on the selection indices: every selection
+                // change would restart pointerInput and cancel the in-progress drag,
+                // which is why the range used to move only one word per drag.
+                val latestWords by rememberUpdatedState(words)
+                val latestSelectedIndices by rememberUpdatedState(selectedWordIndices)
+
                 // Interactive Start Handle (Drag to adjust starting boundary)
                 Box(
                     modifier = Modifier
@@ -1009,23 +1047,34 @@ fun PdfPageItem(
                             )
                         }
                         .size(handleTouchSizeDp)
-                        .pointerInput(pageIndex, minSelectedIdx, maxSelectedIdx, words) {
-                            var currentDragStartOffset = Offset.Zero
+                        .pointerInput(pageIndex, pageWPx, pageHPx) {
+                            var dragPosition = Offset.Zero
+                            var anchorIndex = 0
                             detectDragGestures(
                                 onDragStart = { offset ->
-                                    currentDragStartOffset = Offset(startPinXPx, startPinYPx) + offset - Offset(handleTouchRadiusPx, handleTouchRadiusPx)
+                                    val selection = latestSelectedIndices
+                                    anchorIndex = selection.maxOrNull() ?: 0
+                                    val startIndex = selection.minOrNull() ?: 0
+                                    val startWord = latestWords.getOrNull(startIndex)
+                                    val pinPosition = if (startWord != null) {
+                                        Offset(startWord.relX * pageWPx, startWord.relY * pageHPx)
+                                    } else {
+                                        Offset.Zero
+                                    }
+                                    dragPosition = pinPosition + offset -
+                                        Offset(handleTouchRadiusPx, handleTouchRadiusPx)
                                 },
                                 onDrag = { change, dragAmount ->
                                     change.consume()
-                                    currentDragStartOffset += dragAmount
-                                    val curRelX = (currentDragStartOffset.x / pageWPx).coerceIn(0f, 1f)
-                                    val curRelY = (currentDragStartOffset.y / pageHPx).coerceIn(0f, 1f)
-                                    val newStartIdx = findClosestWordIndex(curRelX, curRelY)
+                                    dragPosition += dragAmount
+                                    val curRelX = (dragPosition.x / pageWPx).coerceIn(0f, 1f)
+                                    val curRelY = (dragPosition.y / pageHPx).coerceIn(0f, 1f)
+                                    val newStartIdx = findClosestWordIndex(latestWords, curRelX, curRelY)
 
-                                    val newMin = min(newStartIdx, maxSelectedIdx)
-                                    val newMax = max(newStartIdx, maxSelectedIdx)
+                                    val newMin = min(newStartIdx, anchorIndex)
+                                    val newMax = max(newStartIdx, anchorIndex)
                                     val newIndices = (newMin..newMax).toSet()
-                                    val text = PdfTextExtractor.formatSelectedWords(words, newIndices)
+                                    val text = PdfTextExtractor.formatSelectedWords(latestWords, newIndices)
                                     onWordsSelected(newIndices, text)
                                 }
                             )
@@ -1043,23 +1092,37 @@ fun PdfPageItem(
                             )
                         }
                         .size(handleTouchSizeDp)
-                        .pointerInput(pageIndex, minSelectedIdx, maxSelectedIdx, words) {
-                            var currentDragEndOffset = Offset.Zero
+                        .pointerInput(pageIndex, pageWPx, pageHPx) {
+                            var dragPosition = Offset.Zero
+                            var anchorIndex = 0
                             detectDragGestures(
                                 onDragStart = { offset ->
-                                    currentDragEndOffset = Offset(endPinXPx, endPinYPx) + offset - Offset(handleTouchRadiusPx, handleTouchRadiusPx)
+                                    val selection = latestSelectedIndices
+                                    anchorIndex = selection.minOrNull() ?: 0
+                                    val endIndex = selection.maxOrNull() ?: 0
+                                    val endWord = latestWords.getOrNull(endIndex)
+                                    val pinPosition = if (endWord != null) {
+                                        Offset(
+                                            (endWord.relX + endWord.relWidth) * pageWPx,
+                                            (endWord.relY + endWord.relHeight) * pageHPx
+                                        )
+                                    } else {
+                                        Offset.Zero
+                                    }
+                                    dragPosition = pinPosition + offset -
+                                        Offset(handleTouchRadiusPx, handleTouchRadiusPx)
                                 },
                                 onDrag = { change, dragAmount ->
                                     change.consume()
-                                    currentDragEndOffset += dragAmount
-                                    val curRelX = (currentDragEndOffset.x / pageWPx).coerceIn(0f, 1f)
-                                    val curRelY = (currentDragEndOffset.y / pageHPx).coerceIn(0f, 1f)
-                                    val newEndIdx = findClosestWordIndex(curRelX, curRelY)
+                                    dragPosition += dragAmount
+                                    val curRelX = (dragPosition.x / pageWPx).coerceIn(0f, 1f)
+                                    val curRelY = (dragPosition.y / pageHPx).coerceIn(0f, 1f)
+                                    val newEndIdx = findClosestWordIndex(latestWords, curRelX, curRelY)
 
-                                    val newMin = min(minSelectedIdx, newEndIdx)
-                                    val newMax = max(minSelectedIdx, newEndIdx)
+                                    val newMin = min(anchorIndex, newEndIdx)
+                                    val newMax = max(anchorIndex, newEndIdx)
                                     val newIndices = (newMin..newMax).toSet()
-                                    val text = PdfTextExtractor.formatSelectedWords(words, newIndices)
+                                    val text = PdfTextExtractor.formatSelectedWords(latestWords, newIndices)
                                     onWordsSelected(newIndices, text)
                                 }
                             )

@@ -27,7 +27,14 @@ class PdfRepository(
 
     fun getHistoryByUri(uriString: String): Flow<PdfItem?> = dao.getByUri(uriString)
 
-    suspend fun openAndRecordPdf(uri: Uri, overrideFileName: String? = null, password: String = ""): Pair<PdfItem, List<PageText>> = withContext(Dispatchers.IO) {
+    /** Result of opening a PDF: the history item, blank per-page text slots, and the file the renderer should open. */
+    data class OpenedPdf(
+        val item: PdfItem,
+        val pages: List<PageText>,
+        val renderFile: File
+    )
+
+    suspend fun openAndRecordPdf(uri: Uri, overrideFileName: String? = null, password: String = ""): OpenedPdf = withContext(Dispatchers.IO) {
         val uriString = uri.toString()
         val existingItem = dao.getByUriSync(uriString)
 
@@ -54,8 +61,24 @@ class PdfRepository(
 
         val fileSize = localFile.length()
 
-        // Authenticate before recording history or attempting rendering.
-        val pageCount = com.example.pdf.PdfSecurity.pageCount(context, localFile, password)
+        // Page count + render source with as little work as possible:
+        // on the common path (no password), probe with the native PdfRenderer
+        // (fast, low memory, no full document parse). Only when a password is
+        // supplied, or the renderer rejects the file (e.g. it is encrypted),
+        // fall back to ONE scratch-backed PDFBox pass that authenticates and,
+        // for encrypted documents, produces the unlocked render copy.
+        var renderFile = localFile
+        val pageCount = if (password.isEmpty()) {
+            probePageCountWithRenderer(localFile) ?: run {
+                val prepared = com.example.pdf.PdfSecurity.prepareDocument(context, localFile, password)
+                renderFile = prepared.renderFile
+                prepared.pageCount
+            }
+        } else {
+            val prepared = com.example.pdf.PdfSecurity.prepareDocument(context, localFile, password)
+            renderFile = prepared.renderFile
+            prepared.pageCount
+        }
         val thumbPath = existingItem?.thumbnailPath
 
         val initialPages = (0 until pageCount).map { i ->
@@ -81,23 +104,36 @@ class PdfRepository(
 
         dao.insert(itemToSave)
 
-        // Defer thumbnail generation to background so it doesn't block PDF opening
-        if (thumbPath.isNullOrEmpty() || !File(thumbPath).exists()) {
-            kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
-                try {
-                    val engine = PdfEngine(context, localFile)
-                    val generatedThumb = engine.generateAndSaveThumbnail()
-                    engine.close()
-                    if (!generatedThumb.isNullOrEmpty()) {
-                        dao.updateThumbnail(itemToSave.uriString, generatedThumb)
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Async thumbnail generation failed: ${e.message}")
-                }
-            }
-        }
+        // Thumbnail generation is intentionally NOT launched here: it used to
+        // spin up a second PdfEngine (another full PDFBox parse + renderer)
+        // concurrently with the open, which is exactly the memory spike that
+        // made large files fail to open. The ViewModel generates the thumbnail
+        // afterwards, reusing the already-open engine.
+        OpenedPdf(itemToSave, initialPages, renderFile)
+    }
 
-        Pair(itemToSave, initialPages)
+    /**
+     * Returns the page count using only the native renderer, or null when the
+     * file cannot be opened by it (encrypted, corrupt, unsupported).
+     */
+    private fun probePageCountWithRenderer(file: File): Int? {
+        var pfd: ParcelFileDescriptor? = null
+        var renderer: android.graphics.pdf.PdfRenderer? = null
+        return try {
+            pfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+            renderer = android.graphics.pdf.PdfRenderer(pfd)
+            renderer.pageCount
+        } catch (e: Throwable) {
+            Log.d(TAG, "PdfRenderer probe failed; falling back to PDFBox: ${e.message}")
+            null
+        } finally {
+            try { renderer?.close() } catch (_: Exception) {}
+            try { pfd?.close() } catch (_: Exception) {}
+        }
+    }
+
+    suspend fun updateThumbnail(uriString: String, thumbnailPath: String) = withContext(Dispatchers.IO) {
+        dao.updateThumbnail(uriString, thumbnailPath)
     }
 
     suspend fun openFromHistory(item: PdfItem): Pair<PdfItem, List<PageText>> = withContext(Dispatchers.IO) {
@@ -162,6 +198,8 @@ class PdfRepository(
                     }
                 } catch (e: Exception) {
                     Log.w(TAG, "Async thumbnail generation in openFromHistory failed: ${e.message}")
+                } catch (e: OutOfMemoryError) {
+                    Log.w(TAG, "Async thumbnail generation in openFromHistory ran out of memory: ${e.message}")
                 }
             }
         }
@@ -169,7 +207,7 @@ class PdfRepository(
         Pair(updatedItem, initialPages)
     }
 
-    suspend fun openSamplePdf(): Pair<PdfItem, List<PageText>> = withContext(Dispatchers.IO) {
+    suspend fun openSamplePdf(): OpenedPdf = withContext(Dispatchers.IO) {
         val sampleFile = SamplePdfGenerator.getOrCreateSamplePdf(context)
         val uri = Uri.fromFile(sampleFile)
         openAndRecordPdf(uri, overrideFileName = "Sample_Guide.pdf")

@@ -29,7 +29,8 @@ data class PageCacheKey(
 class PdfEngine(
     private val context: Context,
     private val localPdfFile: File,
-    password: String = ""
+    password: String = "",
+    preparedFile: File? = null
 ) : AutoCloseable {
 
     companion object {
@@ -143,10 +144,19 @@ class PdfEngine(
 
             val hash = md5(uri.toString())
             val targetFile = File(savedDir, "pdf_$hash.pdf")
+            val partFile = File(savedDir, "pdf_$hash.pdf.part")
 
-            // If file already exists and is non-empty, return it directly
+            // Reuse an existing copy only when it looks complete. Copies are
+            // written to a ".part" file and renamed into place when finished,
+            // so an interrupted copy (likely for very large files) can never
+            // pose as a complete file. When the provider reports the content
+            // size, also heal partial files left behind by older versions.
             if (targetFile.exists() && targetFile.length() > 0L) {
-                return@withContext targetFile
+                val expectedSize = queryContentSize(context, uri)
+                if (expectedSize == null || expectedSize == targetFile.length()) {
+                    return@withContext targetFile
+                }
+                Log.w(TAG, "Cached copy size mismatch (have ${targetFile.length()}, expected $expectedSize); re-copying")
             }
 
             // Also check legacy cacheDir
@@ -154,7 +164,10 @@ class PdfEngine(
             val legacyFile = File(legacyCacheDir, "pdf_$hash.pdf")
             if (legacyFile.exists() && legacyFile.length() > 0L) {
                 try {
-                    legacyFile.copyTo(targetFile, overwrite = true)
+                    legacyFile.inputStream().use { input ->
+                        FileOutputStream(partFile).use { output -> input.copyTo(output, bufferSize = 65536) }
+                    }
+                    movePartIntoPlace(partFile, targetFile)
                     return@withContext targetFile
                 } catch (_: Exception) {
                     return@withContext legacyFile
@@ -162,12 +175,41 @@ class PdfEngine(
             }
 
             context.contentResolver.openInputStream(uri)?.use { input ->
-                FileOutputStream(targetFile).use { output ->
+                FileOutputStream(partFile).use { output ->
                     input.copyTo(output, bufferSize = 65536)
                 }
             } ?: throw IllegalStateException("Could not open input stream from URI: $uri")
+            movePartIntoPlace(partFile, targetFile)
 
             targetFile
+        }
+
+        private fun movePartIntoPlace(partFile: File, targetFile: File) {
+            if (targetFile.exists()) targetFile.delete()
+            if (!partFile.renameTo(targetFile)) {
+                partFile.copyTo(targetFile, overwrite = true)
+                partFile.delete()
+            }
+        }
+
+        private fun queryContentSize(context: Context, uri: Uri): Long? {
+            if (uri.scheme != "content") return null
+            return try {
+                context.contentResolver.query(
+                    uri,
+                    arrayOf(android.provider.OpenableColumns.SIZE),
+                    null, null, null
+                )?.use { cursor ->
+                    val idx = cursor.getColumnIndex(android.provider.OpenableColumns.SIZE)
+                    if (idx != -1 && cursor.moveToFirst() && !cursor.isNull(idx)) {
+                        cursor.getLong(idx)
+                    } else {
+                        null
+                    }
+                }
+            } catch (e: Exception) {
+                null
+            }
         }
 
         private fun md5(input: String): String {
@@ -179,7 +221,11 @@ class PdfEngine(
     private var fileDescriptor: ParcelFileDescriptor? = null
     private var pdfRenderer: PdfRenderer? = null
 
-    val file: File = PdfSecurity.prepareForRendering(context, localPdfFile, password)
+    // When the caller already prepared the document (PdfSecurity.prepareDocument),
+    // reuse that file instead of running a second full PDFBox parse here.
+    // Ownership: a prepared file different from localPdfFile is deleted by close(),
+    // exactly like a temp file created by prepareForRendering.
+    val file: File = preparedFile ?: PdfSecurity.prepareForRendering(context, localPdfFile, password)
     val pageCount: Int
 
     init {
@@ -216,6 +262,9 @@ class PdfEngine(
         return if (cached != null && !cached.isRecycled) cached else null
     }
 
+    /** Upper bound for a single rendered page bitmap (~12M px = ~48MB at ARGB_8888). */
+    private fun maxBitmapPixels(): Int = 12_000_000
+
     suspend fun renderPageBitmap(
         pageIndex: Int,
         targetWidth: Int = 1080,
@@ -230,30 +279,66 @@ class PdfEngine(
 
         val renderer = pdfRenderer ?: return@withContext null
 
-        synchronized(this@PdfEngine) {
+        // Attempt the render; on OutOfMemoryError free the bitmap cache and retry
+        // once with a halved target width instead of crashing the app.
+        // (OutOfMemoryError is an Error, not an Exception, so it must be caught explicitly.)
+        var attemptWidth = targetWidth
+        var lastError: OutOfMemoryError? = null
+        for (attempt in 0..1) {
             try {
-                renderer.openPage(pageIndex).use { page ->
-                    val originalWidth = page.width
-                    val originalHeight = page.height
+                val rendered = synchronized(this@PdfEngine) {
+                    renderer.openPage(pageIndex).use { page ->
+                        val originalWidth = page.width
+                        val originalHeight = page.height
 
-                    val scale = (targetWidth.toFloat() / originalWidth.toFloat()).coerceIn(1.0f, 3.5f)
-                    val width = (originalWidth * scale).toInt().coerceAtLeast(1)
-                    val height = (originalHeight * scale).toInt().coerceAtLeast(1)
+                        var scale = (attemptWidth.toFloat() / originalWidth.toFloat())
+                            .coerceAtMost(3.5f)
+                        // Cap the total pixel count: very large-format pages must be
+                        // allowed to scale BELOW 1.0, otherwise createBitmap asks for
+                        // hundreds of MB and throws OutOfMemoryError.
+                        val pixelsAtScale = originalWidth.toLong() * originalHeight *
+                            scale.toDouble() * scale.toDouble()
+                        if (pixelsAtScale > maxBitmapPixels()) {
+                            val capScale = kotlin.math.sqrt(
+                                maxBitmapPixels().toDouble() /
+                                    (originalWidth.toDouble() * originalHeight.toDouble())
+                            ).toFloat()
+                            scale = minOf(scale, capScale)
+                        }
+                        scale = scale.coerceAtLeast(0.05f)
 
-                    val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-                    // Pre-fill with clean white background
-                    bitmap.eraseColor(Color.WHITE)
+                        val width = (originalWidth * scale).toInt().coerceAtLeast(1)
+                        val height = (originalHeight * scale).toInt().coerceAtLeast(1)
 
-                    page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                        // Pre-fill with clean white background
+                        bitmap.eraseColor(Color.WHITE)
 
-                    bitmapCache.put(cacheKey, bitmap)
-                    bitmap
+                        page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                        bitmap
+                    }
                 }
+                if (attemptWidth == targetWidth) {
+                    bitmapCache.put(cacheKey, rendered)
+                } else {
+                    bitmapCache.put(
+                        PageCacheKey(localPdfFile.absolutePath, pageIndex, attemptWidth),
+                        rendered
+                    )
+                }
+                return@withContext rendered
+            } catch (e: OutOfMemoryError) {
+                lastError = e
+                Log.e(TAG, "Out of memory rendering page $pageIndex (attempt $attempt, width $attemptWidth); evicting cache and retrying smaller", e)
+                bitmapCache.evictAll()
+                attemptWidth = (attemptWidth / 2).coerceAtLeast(360)
             } catch (e: Exception) {
                 Log.e(TAG, "Error rendering page $pageIndex: ${e.message}", e)
-                null
+                return@withContext null
             }
         }
+        Log.e(TAG, "Giving up rendering page $pageIndex after OOM retries: ${lastError?.message}")
+        null
     }
 
     suspend fun generateAndSaveThumbnail(): String? = withContext(Dispatchers.IO) {
@@ -286,6 +371,10 @@ class PdfEngine(
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error generating thumbnail: ${e.message}", e)
+                null
+            } catch (e: OutOfMemoryError) {
+                Log.e(TAG, "Out of memory generating thumbnail: ${e.message}", e)
+                bitmapCache.evictAll()
                 null
             }
         }

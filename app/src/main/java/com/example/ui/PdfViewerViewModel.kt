@@ -165,17 +165,23 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         openJob = viewModelScope.launch {
             _isLoading.value = true
             _errorMessage.value = null
+            // Tracks where an OutOfMemoryError happened so the error message can name the phase
+            var phase = "ファイル読み込み"
             try {
-                val (item, extractedPages) = repository.openAndRecordPdf(uri, password = password ?: "")
+                val opened = repository.openAndRecordPdf(uri, password = password ?: "")
+                val item = opened.item
+                val extractedPages = opened.pages
                 val source = File(requireNotNull(item.filePath))
+                phase = "ビューア準備"
                 val engine = withContext(Dispatchers.IO) {
-                    PdfEngine(getApplication(), source, password ?: "")
+                    PdfEngine(getApplication(), source, password ?: "", preparedFile = opened.renderFile)
                 }
                 backgroundTextJob?.cancel()
                 backgroundTextJob?.join()
                 currentEngine?.close()
                 currentEngine = engine
                 val targetPage = item.lastOpenedPage.coerceIn(0, (item.pageCount - 1).coerceAtLeast(0))
+                phase = "最初のページ描画"
                 engine.renderPageBitmap(targetPage)
                 _activePdfItem.value = item
                 _activePagesText.value = extractedPages
@@ -185,12 +191,18 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 _selectedText.value = null
                 cancelPassword()
                 startBackgroundTextExtraction(engine, engine.file, item.pageCount, targetPage)
+                maybeGenerateThumbnail(engine, item)
             } catch (e: com.tom_roush.pdfbox.pdmodel.encryption.InvalidPasswordException) {
                 pendingPdfUri = uri
                 _passwordRequired.value = true
                 _passwordError.value = if (password == null) null else "パスワードが違います。もう一度入力してください。"
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
+            } catch (e: OutOfMemoryError) {
+                // Large files can exhaust the heap while loading/rendering; report instead of crashing
+                android.util.Log.e("PdfViewerViewModel", "Out of memory while opening PDF (phase: $phase)", e)
+                cancelPassword()
+                _errorMessage.value = "ファイルが大きすぎてメモリが不足しました（段階: $phase）。他のアプリを閉じてから再度お試しください。"
             } catch (e: Exception) {
                 cancelPassword()
                 _errorMessage.value = "PDFを開けませんでした: ${e.localizedMessage}"
@@ -203,6 +215,28 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun openPdfItem(historyItem: PdfItem) {
         openPdf(Uri.parse(historyItem.uriString))
+    }
+
+    /**
+     * Generates the history thumbnail with the already-open engine, after the
+     * viewer is up. (This used to run inside the repository during open with a
+     * second engine — a concurrent full parse that starved large-file opens.)
+     */
+    private fun maybeGenerateThumbnail(engine: PdfEngine, item: PdfItem) {
+        val existing = item.thumbnailPath
+        if (!existing.isNullOrEmpty() && File(existing).exists()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val generated = engine.generateAndSaveThumbnail()
+                if (!generated.isNullOrEmpty()) {
+                    repository.updateThumbnail(item.uriString, generated)
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("PdfViewerViewModel", "Thumbnail generation failed: ${e.message}")
+            } catch (e: OutOfMemoryError) {
+                android.util.Log.w("PdfViewerViewModel", "Thumbnail generation ran out of memory")
+            }
+        }
     }
 
     fun saveWithoutPassword(destination: Uri) {
@@ -247,10 +281,12 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 currentEngine?.close()
                 currentEngine = null
 
-                val (item, extractedPages) = repository.openSamplePdf()
+                val opened = repository.openSamplePdf()
+                val item = opened.item
+                val extractedPages = opened.pages
                 val file = item.filePath?.let { File(it) }
                 if (file != null && file.exists()) {
-                    val engine = PdfEngine(getApplication(), file)
+                    val engine = PdfEngine(getApplication(), file, preparedFile = opened.renderFile)
                     currentEngine = engine
 
                     // Pre-render page 0 immediately
@@ -264,6 +300,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     _selectedText.value = null
 
                     startBackgroundTextExtraction(engine, file, item.pageCount, 0)
+                    maybeGenerateThumbnail(engine, item)
                 }
             } catch (e: Exception) {
                 _errorMessage.value = "サンプルPDFを開けませんでした: ${e.localizedMessage}"
@@ -376,6 +413,9 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 }
             } catch (e: Exception) {
                 android.util.Log.w("PdfViewerViewModel", "Background text extraction interrupted: ${e.message}")
+            } catch (e: OutOfMemoryError) {
+                // Never let background OCR/extraction of a huge file crash the app
+                android.util.Log.w("PdfViewerViewModel", "Background text extraction stopped: out of memory")
             }
         }
     }

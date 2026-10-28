@@ -107,10 +107,14 @@ object PdfTextExtractor {
     fun openSession(file: File): PdfTextExtractionSession {
         if (!file.exists()) return PdfTextExtractionSession(file, null)
         return try {
-            val doc = PDDocument.load(file)
+            // Scratch-file loading keeps large PDFs from exhausting the heap
+            val doc = PDDocument.load(file, com.tom_roush.pdfbox.io.MemoryUsageSetting.setupTempFileOnly())
             PdfTextExtractionSession(file, doc)
         } catch (e: Exception) {
             Log.w(TAG, "Failed to load PDDocument for session: ${e.message}")
+            PdfTextExtractionSession(file, null)
+        } catch (e: OutOfMemoryError) {
+            Log.w(TAG, "Out of memory loading PDDocument for session: ${e.message}")
             PdfTextExtractionSession(file, null)
         }
     }
@@ -275,11 +279,14 @@ object PdfTextExtractor {
     fun extractNativeTextFromPdf(file: File, pageIndex: Int): PageText? {
         if (!file.exists()) return null
         return try {
-            PDDocument.load(file).use { doc ->
+            PDDocument.load(file, com.tom_roush.pdfbox.io.MemoryUsageSetting.setupTempFileOnly()).use { doc ->
                 extractNativeTextFromDoc(doc, pageIndex)
             }
         } catch (e: Exception) {
             Log.w(TAG, "Native text extraction skipped or failed for page $pageIndex: ${e.message}")
+            null
+        } catch (e: OutOfMemoryError) {
+            Log.w(TAG, "Out of memory during native text extraction for page $pageIndex: ${e.message}")
             null
         }
     }
